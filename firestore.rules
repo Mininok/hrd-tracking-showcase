@@ -1,0 +1,77 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helpers ───────────────────────────────────────────────
+    function isSignedIn()   { return request.auth != null; }
+    function isFreshket()   { return isSignedIn() && request.auth.token.email.matches('.*@freshket\\.co$'); }
+    function isSuperAdmin() { return isSignedIn() && request.auth.token.email == 'kanok.t@freshket.co'; }
+
+    // ── DIMENSION: Employees (read-only from GAS) ─────────────
+    match /employees/{doc} {
+      allow read:  if isFreshket();
+      allow write: if false;
+    }
+
+    // ── DIMENSION: Courses (dim_programs) ────────────────────
+    // Super Admin CRUD · freshket.co อ่านได้
+    match /courses/{courseId} {
+      allow read:   if isFreshket();
+      allow create: if isSuperAdmin();
+      allow update: if isSuperAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // ── FACT: Training Records ────────────────────────────────
+    // Super Admin import CSV · freshket.co อ่านได้
+    match /training_records/{recordId} {
+      allow read:   if isFreshket();
+      allow create: if isSuperAdmin();
+      allow update: if isSuperAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // ── FACT: Assessment (GAS sync + Super Admin CSV upload) ─
+    match /assessment/{doc} {
+      allow read:   if true;
+      allow create: if isSuperAdmin();
+      allow update: if isSuperAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // ── FACT: Satisfaction (read-only from GAS) ───────────────
+    match /satisfaction/{doc} {
+      allow read:  if true;
+      allow write: if false;
+    }
+
+    // ── FACT: Townhall (read-only from GAS) ──────────────────
+    match /Townhall/{event}/{sub}/{doc} {
+      allow read:  if true;
+      allow write: if false;
+    }
+
+    // ── FACT: DSD Submissions ─────────────────────────────────
+    match /dsd_submissions/{submissionId} {
+      allow read:   if isFreshket();
+      allow create: if isFreshket()
+                    && request.resource.data.uploaded_by == request.auth.token.email
+                    && request.resource.data.status == 'pending';
+      allow update: if isSuperAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // ── DIMENSION: DSD User Roles ─────────────────────────────
+    match /dsd_users/{email} {
+      allow read:  if isSuperAdmin()
+                   || (isFreshket() && request.auth.token.email == email);
+      allow write: if isSuperAdmin();
+    }
+
+    // ── Admin Notes ───────────────────────────────────────────
+    match /plan_notes/{doc} {
+      allow read:  if isFreshket();
+      allow write: if isSuperAdmin();
+    }
+  }
+}

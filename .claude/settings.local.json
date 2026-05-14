@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run:*)",
+      "Read(//usr/local/**)",
+      "Bash(cmd.exe /c \"node --version && npm --version\")",
+      "Bash(export PATH=\"/c/Program Files/nodejs:$PATH\")",
+      "Read(//tmp/**)",
+      "WebFetch(domain:getdesign.md)",
+      "Bash(npx getdesign@latest add linear.app)",
+      "Bash(cmd /c \"cd /d \\\\\"C:\\\\Users\\\\freshket.co\\\\OneDrive\\\\เดสก์ท็อป_Macbook\\\\VS-code-project\\\\Visit-IYR\\\\\" && npx getdesign@latest add linear.app\")",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(powershell.exe -Command \"Set-Location 'C:\\\\Users\\\\freshket.co\\\\OneDrive\\\\เดสก์ท็อป_Macbook\\\\VS-code-project\\\\Visit-IYR'; npx getdesign@latest add linear.app\")"
+    ]
+  }
+}

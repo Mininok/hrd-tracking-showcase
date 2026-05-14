@@ -1,0 +1,197 @@
+/**
+ * Visit IYR Tour — Enterprise Sync Engine
+ * @version 2.3.0
+ * Changes:
+ * - Add `batch` field (YYYY-MM) for easy frontend filtering
+ * - Normalize score: handle both number and "X/Y" string formats
+ * - Preserve `timestamp` from Google Forms submission
+ */
+
+// ── CONFIGURATION ──────────────────────────────────────────
+const CONFIG = {
+  SPREADSHEET_ID: "1lRsbBADBT-HqTY0i4orYr6fIB56KULFTXN4v-gI3ILM",
+  FIREBASE_PROJECT_ID: "visit-iyr-report",
+  FIREBASE_API_KEY: "AIzaSyDpgbz2ulBur83Lh_t0-MR10bB2rjA_wAM",
+  DATABASE_ID: "(default)",
+
+  SHEETS: [
+    {
+      name: "Assessment",
+      collection: "assessment",
+      idFields: ['email', 'test_type'],
+      passThreshold: 0.7
+    },
+    {
+      name: "Satisfaction",
+      collection: "satisfaction",
+      idFields: ['timestamp', 'department']
+    }
+  ]
+};
+
+function syncAll() {
+  console.log("🚀 Starting Sync v2.3.0...");
+  const startTime = new Date();
+  try {
+    CONFIG.SHEETS.forEach(config => syncSheetToFirestore(config));
+    console.log(`✅ Done in ${((new Date() - startTime) / 1000).toFixed(2)}s`);
+  } catch (err) {
+    console.error("❌ Fatal Error:", err.stack);
+  }
+}
+
+function syncSheetToFirestore(sheetConfig) {
+  const { name, collection, idFields, passThreshold } = sheetConfig;
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(name);
+
+  if (!sheet) return console.warn(`⚠️ Sheet "${name}" not found.`);
+  const data = sheet.getDataRange().getValues();
+  if (data.length < 2) return;
+
+  const headers = data[0].map(h =>
+    h.toString().trim().replace(/[?()\[\]]/g, "").replace(/\s+/g, "_").toLowerCase()
+  );
+
+  const rows = data.slice(1);
+  const requests = [];
+
+  rows.forEach(row => {
+    const rowObject = {};
+    headers.forEach((header, i) => {
+      if (header) rowObject[header] = row[i];
+    });
+
+    // ── Assessment normalization ─────────────────────────────
+    if (collection === 'assessment') {
+      // Email
+      const rawEmail = rowObject['email_address'] || rowObject['email'] || "";
+      rowObject['email'] = rawEmail.toLowerCase().trim();
+      delete rowObject['email_address'];
+
+      // test_type: 'pre' or 'post'
+      const rawType = rowObject['type'] || "";
+      rowObject['test_type'] = (
+        rawType.toString().includes('หลัง') ||
+        rawType.toString().toLowerCase().includes('post') ||
+        rawType.toString() === '2'
+      ) ? 'post' : 'pre';
+
+      // Score: handle number or "X / Y" string
+      const scoreRaw = rowObject['score'];
+      const scoreMax = 10;
+      let scoreValue = 0;
+
+      if (typeof scoreRaw === 'number' && !isNaN(scoreRaw)) {
+        scoreValue = scoreRaw;
+      } else if (typeof scoreRaw === 'string' && scoreRaw.includes('/')) {
+        const parts = scoreRaw.split('/').map(p => parseFloat(p.trim()));
+        scoreValue = !isNaN(parts[0]) ? parts[0] : 0;
+      }
+
+      rowObject['score_value'] = scoreValue;
+      rowObject['score_max'] = scoreMax;
+      rowObject['score_percent'] = Math.round((scoreValue / scoreMax) * 100);
+      rowObject['is_passed'] = (scoreValue / scoreMax) >= (passThreshold || 0.7);
+
+      // Batch: YYYY-MM from form timestamp (col 0) or now
+      const formTimestamp = row[0] instanceof Date ? row[0] : new Date();
+      rowObject['batch'] = `${formTimestamp.getFullYear()}-${String(formTimestamp.getMonth() + 1).padStart(2, '0')}`;
+      // Keep timestamp for display
+      rowObject['timestamp'] = formTimestamp;
+    }
+
+    // ── Satisfaction normalization ───────────────────────────
+    if (collection === 'satisfaction') {
+      const formTimestamp = row[0] instanceof Date ? row[0] : new Date();
+      rowObject['batch']     = `${formTimestamp.getFullYear()}-${String(formTimestamp.getMonth() + 1).padStart(2, '0')}`;
+      rowObject['timestamp'] = formTimestamp;
+
+      // Ensure all rating fields are stored as numbers
+      const ratingFields = [
+        'expertise', 'overall_vibe', 'bite_sized_learning',
+        'confidence_boost', 'coordination_support', 'operational_empathy'
+      ];
+      ratingFields.forEach(f => {
+        if (rowObject[f] !== undefined) rowObject[f] = Number(rowObject[f]) || 0;
+      });
+    }
+
+    // ── Document ID ─────────────────────────────────────────
+    let docId;
+    if (collection === 'assessment') {
+      const idSeed = idFields.map(f => rowObject[f] || "").join("_");
+      docId = idSeed.replace(/[@.]/g, "_");
+    } else {
+      const idSeed = idFields.map(f => rowObject[f] || "").join("_");
+      docId = generateMd5(idSeed);
+    }
+
+    requests.push(buildFirestoreRequest(collection, docId, rowObject));
+  });
+
+  if (requests.length > 0) {
+    const responses = UrlFetchApp.fetchAll(requests);
+    const successCount = responses.filter(r => r.getResponseCode() === 200).length;
+    console.log(`📊 [${collection}] ${successCount}/${requests.length} synced`);
+    upsertMetadata(collection, successCount);
+  }
+}
+
+function buildFirestoreRequest(collection, docId, data) {
+  const url = `https://firestore.googleapis.com/v1/projects/${CONFIG.FIREBASE_PROJECT_ID}/databases/${CONFIG.DATABASE_ID}/documents/${collection}/${docId}`;
+  const payload = { fields: {} };
+
+  Object.keys(data).forEach(key => {
+    const val = data[key];
+    if (val === "" || val === null || val === undefined) {
+      payload.fields[key] = { nullValue: null };
+    } else if (val instanceof Date) {
+      payload.fields[key] = { timestampValue: val.toISOString() };
+    } else if (typeof val === 'boolean') {
+      payload.fields[key] = { booleanValue: val };
+    } else if (typeof val === 'number') {
+      payload.fields[key] = isNaN(val) ? { nullValue: null } : { doubleValue: val };
+    } else {
+      payload.fields[key] = { stringValue: val.toString() };
+    }
+  });
+
+  payload.fields["_synced_at"] = { timestampValue: new Date().toISOString() };
+
+  return {
+    url,
+    method: "PATCH",
+    contentType: "application/json",
+    headers: { Authorization: `Bearer ${ScriptApp.getOAuthToken()}` },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+}
+
+function generateMd5(input) {
+  const rawHash = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, input);
+  let txtHash = "";
+  for (let i = 0; i < rawHash.length; i++) {
+    let byte = rawHash[i];
+    if (byte < 0) byte += 256;
+    txtHash += byte.toString(16).padStart(2, '0');
+  }
+  return txtHash;
+}
+
+function upsertMetadata(collection, count) {
+  const req = buildFirestoreRequest("metadata", `${collection}_sync_info`, {
+    collection,
+    last_count: count,
+    last_run: new Date(),
+    status: "Healthy"
+  });
+  UrlFetchApp.fetch(req.url, req);
+}
+
+function setupTrigger() {
+  ScriptApp.getProjectTriggers().forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger('syncAll').timeBased().everyMinutes(15).create();
+  console.log("⏰ Trigger installed: every 15 min");
+}

@@ -1,0 +1,28 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Default: block everything
+    match /{allPaths=**} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // ── DSD files ────────────────────────────────────────────
+    match /dsd/{submissionId}/{filename} {
+      allow read: if request.auth != null
+                  && request.auth.token.email.matches('.*@freshket\\.co$');
+
+      allow write: if request.auth != null
+                   && request.auth.token.email.matches('.*@freshket\\.co$')
+                   && request.resource.size <= 20 * 1024 * 1024
+                   && (
+                     request.resource.contentType.matches('image/(jpeg|png)')
+                     || request.resource.contentType == 'application/pdf'
+                   );
+
+      allow delete: if request.auth != null
+                    && request.auth.token.email == 'kanok.t@freshket.co';
+    }
+  }
+}
